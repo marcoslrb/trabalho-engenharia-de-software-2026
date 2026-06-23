@@ -1,312 +1,171 @@
-import streamlit as st
-import sqlite3
-import pandas as pd
-from datetime import datetime
-import uuid
+"""
+app.py — Ponto de entrada do Sistema de Ouvidoria v2.0
+Executa: streamlit run app.py
+"""
+
+import sys
 import os
 
-# Configuração da página Streamlit
+# Garante que o diretório raiz do projeto está no sys.path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import streamlit as st
+from database.migrations import run_migrations
+from services.auth_service import usuario_logado, encerrar_sessao
+
+# ── Configuração da página ──────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Sistema de Ouvidoria",
-    page_icon="📋",
+    page_icon="🏛️",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
+    menu_items={
+        "Get Help": None,
+        "Report a bug": None,
+        "About": "Sistema de Ouvidoria v2.0 — Trabalho de Engenharia de Software 2026",
+    },
 )
 
-# Estilo CSS customizado
+# CSS global
 st.markdown("""
-    <style>
-    .header {
-        color: #1f77b4;
-        font-size: 2.5em;
-        font-weight: bold;
-        margin-bottom: 20px;
+<style>
+    /* Remove padding extra do topo */
+    .block-container { padding-top: 1.5rem; }
+    /* Sidebar mais limpa */
+    section[data-testid="stSidebar"] { background: #f0f4ff; }
+    /* Métricas */
+    [data-testid="metric-container"] { background: #fff; border-radius: 10px; padding: 12px; border: 1px solid #e0e8ff; }
+    /* Botões primários */
+    .stButton > button[kind="primary"] { background: linear-gradient(135deg, #1f4e79, #2e75b6); border: none; }
+    /* Expander */
+    details summary { font-size: 0.95rem; }
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-thumb { background: #b0c4de; border-radius: 3px; }
+</style>
+""", unsafe_allow_html=True)
+
+
+def inicializar():
+    """Inicializa banco de dados na primeira execução."""
+    if "db_inicializado" not in st.session_state:
+        run_migrations()
+        st.session_state["db_inicializado"] = True
+
+
+def sidebar_cidadao():
+    """Sidebar da área do cidadão."""
+    st.sidebar.markdown("## 🏛️ Ouvidoria")
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 📌 Menu do Cidadão")
+
+    paginas = {
+        "🏠 Início": "home",
+        "📝 Registrar Manifestação": "abertura",
+        "🔍 Consultar Protocolo": "consulta",
     }
-    .protocol-box {
-        background-color: #e7f3ff;
-        border-left: 4px solid #1f77b4;
-        padding: 15px;
-        margin: 15px 0;
-        border-radius: 5px;
-    }
-    .success-box {
-        background-color: #d4edda;
-        border-left: 4px solid #28a745;
-        padding: 15px;
-        margin: 15px 0;
-        border-radius: 5px;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+    for label, pagina in paginas.items():
+        ativo = st.session_state.get("pagina_cidadao") == pagina
+        if st.sidebar.button(label, key=f"sb_{pagina}", use_container_width=True,
+                             type="primary" if ativo else "secondary"):
+            st.session_state["pagina_cidadao"] = pagina
+            st.rerun()
 
-# ========== CONFIGURAÇÃO DO BANCO DE DADOS ==========
-DATABASE_PATH = "ouvidoria.db"
+    st.sidebar.markdown("---")
+    if st.sidebar.button("🔐 Área Administrativa", use_container_width=True):
+        st.session_state["area"] = "admin"
+        st.rerun()
 
-def initialize_database():
-    """Inicializa o banco de dados SQLite com a tabela de manifestações"""
-    conn = sqlite3.connect(DATABASE_PATH)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS manifestacoes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            protocolo TEXT UNIQUE NOT NULL,
-            texto_manifestacao TEXT NOT NULL,
-            eh_anonimo BOOLEAN NOT NULL,
-            data_registro TIMESTAMP NOT NULL,
-            nome_cidadao TEXT,
-            email_cidadao TEXT
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
+    st.sidebar.markdown("---")
+    st.sidebar.caption("📌 Versão 2.0 | 2026")
 
-def gerar_protocolo():
-    """Gera um número de protocolo único"""
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    aleatorio = str(uuid.uuid4().hex[:8]).upper()
-    protocolo = f"OUT-{timestamp}-{aleatorio}"
-    return protocolo
 
-def salvar_manifestacao(protocolo, texto, eh_anonimo, nome=None, email=None):
-    """Salva uma manifestação no banco de dados"""
-    try:
-        conn = sqlite3.connect(DATABASE_PATH)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO manifestacoes 
-            (protocolo, texto_manifestacao, eh_anonimo, data_registro, nome_cidadao, email_cidadao)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (protocolo, texto, eh_anonimo, datetime.now(), nome, email))
-        
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        st.error(f"Erro ao salvar manifestação: {e}")
-        return False
+def sidebar_admin(user: dict):
+    """Sidebar da área administrativa."""
+    from config.settings import PERFIL_LABELS, PERFIL_ADMIN
 
-def obter_manifestacoes():
-    """Recupera todas as manifestações do banco de dados"""
-    try:
-        conn = sqlite3.connect(DATABASE_PATH)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT protocolo, texto_manifestacao, eh_anonimo, data_registro, nome_cidadao, email_cidadao
-            FROM manifestacoes
-            ORDER BY data_registro DESC
-        ''')
-        
-        resultados = cursor.fetchall()
-        conn.close()
-        return resultados
-    except Exception as e:
-        st.error(f"Erro ao recuperar manifestações: {e}")
-        return []
+    st.sidebar.markdown("## 🔐 Painel Administrativo")
+    st.sidebar.markdown(f"**{user['nome_completo']}**")
+    st.sidebar.caption(f"Perfil: {PERFIL_LABELS.get(user['perfil'], user['perfil'])}")
+    st.sidebar.markdown("---")
 
-# ========== INTERFACE DO CIDADÃO ==========
-def interface_cidadao():
-    """Interface para registro de manifestações pelo cidadão"""
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.markdown('<div class="header">📝 Registro de Manifestação</div>', unsafe_allow_html=True)
-    
-    st.markdown("---")
-    st.write("Bem-vindo ao Sistema de Ouvidoria. Utilize este formulário para registrar sua manifestação.")
-    
-    with st.form("form_manifestacao"):
-        st.subheader("Dados da Manifestação")
-        
-        # Campo para texto da manifestação
-        texto_manifestacao = st.text_area(
-            "Descreva sua manifestação (denúncia, sugestão, reclamação, etc.):",
-            placeholder="Digite aqui o texto de sua manifestação...",
-            height=150,
-            max_chars=5000
-        )
-        
-        st.markdown("---")
-        st.subheader("Informações Adicionais")
-        
-        # Opção de anonimato
-        eh_anonimo = st.checkbox(
-            "Desejo manter minha manifestação anônima",
-            value=False,
-            help="Se marcado, sua manifestação será registrada sem identificação pessoal"
-        )
-        
-        # Dados do cidadão (opcional se não for anônimo)
-        if not eh_anonimo:
-            col1, col2 = st.columns(2)
-            with col1:
-                nome_cidadao = st.text_input("Seu nome (opcional):")
-            with col2:
-                email_cidadao = st.text_input("Seu email (opcional):")
-        else:
-            nome_cidadao = None
-            email_cidadao = None
-        
-        st.markdown("---")
-        
-        # Botão de submissão
-        submitted = st.form_submit_button(
-            "✅ Registrar Manifestação",
-            use_container_width=True,
-            type="primary"
-        )
-        
-        if submitted:
-            if not texto_manifestacao.strip():
-                st.error("❌ Por favor, descreva sua manifestação.")
-            else:
-                # Gerar protocolo e salvar
-                protocolo = gerar_protocolo()
-                sucesso = salvar_manifestacao(
-                    protocolo=protocolo,
-                    texto=texto_manifestacao,
-                    eh_anonimo=eh_anonimo,
-                    nome=nome_cidadao if nome_cidadao else None,
-                    email=email_cidadao if email_cidadao else None
-                )
-                
-                if sucesso:
-                    st.markdown(f'''
-                    <div class="success-box">
-                    <h3>✅ Manifestação Registrada com Sucesso!</h3>
-                    <p><strong>Seu número de protocolo:</strong></p>
-                    <h2 style="color: #28a745; font-family: monospace;">{protocolo}</h2>
-                    <p><em>Guarde este número para referência futura. Você poderá utilizá-lo para acompanhar sua manifestação.</em></p>
-                    </div>
-                    ''', unsafe_allow_html=True)
-                    
-                    st.balloons()
-                else:
-                    st.error("❌ Erro ao registrar a manifestação. Tente novamente.")
+    paginas = [
+        ("📊 Dashboard", "dashboard"),
+        ("📈 Relatórios", "relatorios"),
+    ]
+    if user["perfil"] == PERFIL_ADMIN:
+        paginas.append(("👥 Usuários", "usuarios"))
 
-# ========== INTERFACE DO GESTOR ==========
-def interface_gestor():
-    """Interface de dashboard para o gestor/analista"""
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.markdown('<div class="header">📊 Painel de Gestão - Denúncias Registradas</div>', unsafe_allow_html=True)
-    
-    st.markdown("---")
-    
-    # Buscar manifestações
-    manifestacoes = obter_manifestacoes()
-    
-    # Estatísticas
-    if manifestacoes:
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Total de Manifestações", len(manifestacoes))
-        
-        with col2:
-            anonimas = sum(1 for m in manifestacoes if m[2])
-            st.metric("Denúncias Anônimas", anonimas)
-        
-        with col3:
-            identificadas = sum(1 for m in manifestacoes if not m[2])
-            st.metric("Denúncias Identificadas", identificadas)
-        
-        with col4:
-            st.metric("Taxa de Anonimato", f"{(anonimas/len(manifestacoes)*100):.1f}%")
-        
-        st.markdown("---")
-        st.subheader("📋 Listagem de Manifestações")
-        
-        # Opções de filtro
-        col1, col2 = st.columns(2)
-        with col1:
-            filtro_anonimo = st.selectbox(
-                "Filtrar por tipo:",
-                ["Todas", "Apenas Anônimas", "Apenas Identificadas"]
-            )
-        
-        # Aplicar filtro
-        if filtro_anonimo == "Apenas Anônimas":
-            manifestacoes_filtradas = [m for m in manifestacoes if m[2]]
-        elif filtro_anonimo == "Apenas Identificadas":
-            manifestacoes_filtradas = [m for m in manifestacoes if not m[2]]
-        else:
-            manifestacoes_filtradas = manifestacoes
-        
-        # Exibir manifestações em cards
-        if manifestacoes_filtradas:
-            for idx, manifestacao in enumerate(manifestacoes_filtradas, 1):
-                protocolo, texto, eh_anonimo, data_registro, nome, email = manifestacao
-                
-                # Formatar data
-                try:
-                    data_obj = datetime.strptime(data_registro, "%Y-%m-%d %H:%M:%S.%f")
-                except:
-                    data_obj = datetime.strptime(data_registro, "%Y-%m-%d %H:%M:%S")
-                data_formatada = data_obj.strftime("%d/%m/%Y às %H:%M")
-                
-                with st.expander(f"📌 {protocolo} - {data_formatada}"):
-                    col1, col2 = st.columns([3, 1])
-                    
-                    with col1:
-                        st.write("**Texto da Manifestação:**")
-                        st.write(texto)
-                    
-                    with col2:
-                        status_anonimato = "🔒 Anônimo" if eh_anonimo else "👤 Identificado"
-                        st.write(f"**Status:** {status_anonimato}")
-                    
-                    if not eh_anonimo:
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            if nome:
-                                st.write(f"**Nome:** {nome}")
-                        with col2:
-                            if email:
-                                st.write(f"**Email:** {email}")
-                    
-                    # Divider
-                    st.divider()
-        else:
-            st.info("Nenhuma manifestação encontrada com os filtros aplicados.")
-    else:
-        st.info("📭 Nenhuma manifestação registrada até o momento.")
+    for label, pagina in paginas:
+        ativo = st.session_state.get("pagina_admin") == pagina
+        if st.sidebar.button(label, key=f"adm_{pagina}", use_container_width=True,
+                             type="primary" if ativo else "secondary"):
+            st.session_state["pagina_admin"] = pagina
+            st.rerun()
 
-# ========== APLICAÇÃO PRINCIPAL ==========
+    st.sidebar.markdown("---")
+    if st.sidebar.button("🚪 Sair", use_container_width=True):
+        encerrar_sessao()
+        st.session_state["area"] = "cidadao"
+        st.rerun()
+    if st.sidebar.button("← Portal do Cidadão", use_container_width=True):
+        st.session_state["area"] = "cidadao"
+        st.rerun()
+
+
 def main():
-    """Função principal da aplicação"""
-    # Inicializar banco de dados
-    initialize_database()
-    
-    # Sidebar - Seleção de tipo de usuário
-    st.sidebar.markdown("## 👥 Seleção de Perfil")
-    st.sidebar.markdown("---")
-    
-    tipo_usuario = st.sidebar.radio(
-        "Escolha seu perfil:",
-        ["Cidadão", "Gestor/Analista"],
-        index=0,
-        help="Selecione o tipo de usuário para acessar a interface apropriada"
-    )
-    
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### ℹ️ Informações")
-    st.sidebar.write("""
-    **Sistema de Ouvidoria**
-    
-    - **Cidadão**: Registre suas manifestações
-    - **Gestor**: Acompanhe e gerencie as denúncias
-    
-    Versão: 1.0
-    """)
-    
-    # Exibir interface apropriada
-    if tipo_usuario == "Cidadão":
-        interface_cidadao()
+    inicializar()
+
+    # Determina área ativa
+    area = st.session_state.get("area", "cidadao")
+
+    # ── ÁREA ADMINISTRATIVA ───────────────────────────────────────────────────
+    if area == "admin":
+        user = usuario_logado()
+
+        if not user:
+            # Tela de login
+            from ui.admin.login import render as render_login
+            render_login()
+            return
+
+        # Usuário autenticado — exibe painel
+        sidebar_admin(user)
+        pagina_admin = st.session_state.get("pagina_admin", "dashboard")
+
+        if pagina_admin == "dashboard":
+            from ui.admin.dashboard import render as render_dashboard
+            render_dashboard()
+        elif pagina_admin == "detalhe":
+            from ui.admin.detalhe import render as render_detalhe
+            render_detalhe()
+        elif pagina_admin == "relatorios":
+            from ui.admin.relatorios import render as render_relatorios
+            render_relatorios()
+        elif pagina_admin == "usuarios":
+            from ui.admin.admin_usuarios import render as render_usuarios
+            render_usuarios()
+        else:
+            from ui.admin.dashboard import render as render_dashboard
+            render_dashboard()
+
+    # ── ÁREA DO CIDADÃO ───────────────────────────────────────────────────────
     else:
-        interface_gestor()
+        sidebar_cidadao()
+        pagina = st.session_state.get("pagina_cidadao", "home")
+
+        if pagina == "home":
+            from ui.cidadao.home import render as render_home
+            render_home()
+        elif pagina == "abertura":
+            from ui.cidadao.abertura import render as render_abertura
+            render_abertura()
+        elif pagina == "consulta":
+            from ui.cidadao.consulta import render as render_consulta
+            render_consulta()
+        else:
+            from ui.cidadao.home import render as render_home
+            render_home()
+
 
 if __name__ == "__main__":
     main()
