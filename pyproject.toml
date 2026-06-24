@@ -1,0 +1,29 @@
+[tool.poetry]
+name = "ouvidoria-publica"
+version = "2.0.0"
+description = "Sistema de Ouvidoria Pública"
+authors = ["Marcos <marcoslrb@github>"]
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.13"
+streamlit = ">=1.35.0"
+pandas = ">=2.0.0"
+bcrypt = ">=4.1.0"
+pyotp = ">=2.9.0"
+qrcode = { version = ">=7.4.2", extras = ["pil"] }
+pillow = ">=10.0.0"
+openpyxl = ">=3.1.0"
+python-magic-bin = { version = ">=0.4.14", markers = "sys_platform == 'win32'" }
+fastapi = "^0.138.0"
+
+[tool.poetry.group.dev.dependencies]
+taskipy = "^1.12.0"
+
+[tool.taskipy.tasks]
+run = "python app.py"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

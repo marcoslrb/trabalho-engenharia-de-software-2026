@@ -1,3 +1,9 @@
+# ⚠️ ATENÇÃO: Instruções Legadas (Versão 1.0)
+> **Este arquivo descreve o MVP original baseado em Streamlit (v1.0).**  
+> Para a versão atual (v2.0 - FastAPI + Vite SPA), siga as orientações no [README.md](file:///home/marcoslrb/trabalho-engenharia-de-software-2026/README.md).
+
+---
+
 # 📋 Sistema de Ouvidoria - MVP
 
 MVP funcional de um Sistema de Ouvidoria desenvolvido com Python, Streamlit e SQLite.

@@ -47,6 +47,7 @@ def run_migrations() -> None:
         _m007_create_auditoria(conn)
         _m008_seed_categorias(conn)
         _m009_create_indexes(conn)
+        _m010_create_validacoes(conn)
 
     logger.info("Todas as migrações concluídas com sucesso.")
 
@@ -193,3 +194,21 @@ def _m009_create_indexes(conn) -> None:
     ]
     for stmt in indexes:
         conn.execute(stmt)
+
+
+# ── Migração 010 — Tabela de validações de requisitos ─────────────────────────
+
+def _m010_create_validacoes(conn) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS validacoes (
+            id TEXT PRIMARY KEY,
+            groupName TEXT NOT NULL,
+            reviewer TEXT NOT NULL,
+            reviewDate TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            consistencyNote TEXT,
+            completenessNote TEXT,
+            rnfNote TEXT,
+            createdAt TIMESTAMP NOT NULL
+        )
+    """)

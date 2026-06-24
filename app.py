@@ -1,171 +1,255 @@
-"""
-app.py — Ponto de entrada do Sistema de Ouvidoria v2.0
-Executa: streamlit run app.py
-"""
-
-import sys
 import os
+import sys
+from typing import Dict, Any, List, Optional
+from datetime import datetime
 
 # Garante que o diretório raiz do projeto está no sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import streamlit as st
-from database.migrations import run_migrations
-from services.auth_service import usuario_logado, encerrar_sessao
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
-# ── Configuração da página ──────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="Sistema de Ouvidoria",
-    page_icon="🏛️",
-    layout="wide",
-    initial_sidebar_state="expanded",
-    menu_items={
-        "Get Help": None,
-        "Report a bug": None,
-        "About": "Sistema de Ouvidoria v2.0 — Trabalho de Engenharia de Software 2026",
-    },
+from database.migrations import run_migrations
+from services import manifestacao_service, auth_service
+from repositories import manifestacao_repo, validacao_repo
+
+# Executa migrações ao inicializar o banco de dados SQLite
+run_migrations()
+
+app = FastAPI(title="Ouvidoria Pública API", version="2.0.0")
+
+# Permite CORS para desenvolvimento frontend local
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# CSS global
-st.markdown("""
-<style>
-    /* Remove padding extra do topo */
-    .block-container { padding-top: 1.5rem; }
-    /* Sidebar mais limpa */
-    section[data-testid="stSidebar"] { background: #f0f4ff; }
-    /* Métricas */
-    [data-testid="metric-container"] { background: #fff; border-radius: 10px; padding: 12px; border: 1px solid #e0e8ff; }
-    /* Botões primários */
-    .stButton > button[kind="primary"] { background: linear-gradient(135deg, #1f4e79, #2e75b6); border: none; }
-    /* Expander */
-    details summary { font-size: 0.95rem; }
-    /* Scrollbar */
-    ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-thumb { background: #b0c4de; border-radius: 3px; }
-</style>
-""", unsafe_allow_html=True)
+# Modelos Pydantic para payloads de entrada
+class ManifestacaoCreate(BaseModel):
+    category: str
+    anonymous: bool
+    name: Optional[str] = ""
+    email: Optional[str] = ""
+    phone: Optional[str] = ""
+    subject: str
+    description: str
+    sector: Optional[str] = ""
+    attachments: Optional[List[str]] = []
 
+class ManifestacaoUpdate(BaseModel):
+    sector: str
+    status: str
+    response: str
 
-def inicializar():
-    """Inicializa banco de dados na primeira execução."""
-    if "db_inicializado" not in st.session_state:
-        run_migrations()
-        st.session_state["db_inicializado"] = True
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
+class ValidationCreate(BaseModel):
+    id: str
+    groupName: str
+    reviewer: str
+    reviewDate: str
+    decision: str
+    consistencyNote: Optional[str] = ""
+    completenessNote: Optional[str] = ""
+    rnfNote: Optional[str] = ""
+    createdAt: str
 
-def sidebar_cidadao():
-    """Sidebar da área do cidadão."""
-    st.sidebar.markdown("## 🏛️ Ouvidoria")
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### 📌 Menu do Cidadão")
+# Função auxiliar para mapear manifestações no formato esperado pelo JS frontend
+def map_to_frontend(m: dict, history: list = None) -> dict:
+    # Formata data_registro
+    reg_date = m.get("data_registro")
+    if hasattr(reg_date, "isoformat"):
+        reg_date = reg_date.isoformat()
+    elif not isinstance(reg_date, str):
+        reg_date = str(reg_date)
+        
+    up_date = m.get("data_atualizacao")
+    if hasattr(up_date, "isoformat"):
+        up_date = up_date.isoformat()
+    elif not isinstance(up_date, str):
+        up_date = str(up_date)
 
-    paginas = {
-        "🏠 Início": "home",
-        "📝 Registrar Manifestação": "abertura",
-        "🔍 Consultar Protocolo": "consulta",
+    return {
+        "protocol": m.get("protocolo"),
+        "category": m.get("categoria"),
+        "subject": m.get("assunto") or "Sem assunto",
+        "description": m.get("texto_manifestacao") or "",
+        "status": m.get("status") or "Recebida",
+        "sector": m.get("setor") or "Atendimento ao cidadão",
+        "anonymous": bool(m.get("eh_anonimo")),
+        "name": m.get("nome_cidadao") or "Sigiloso",
+        "email": m.get("email_cidadao") or "",
+        "phone": m.get("telefone_cidadao") or "",
+        "history": [
+            {
+                "status": h.get("status_novo"),
+                "date": h.get("data_alteracao").isoformat() if hasattr(h.get("data_alteracao"), "isoformat") else str(h.get("data_alteracao")),
+                "note": h.get("observacao") or ""
+            } for h in history
+        ] if history else [
+            {
+                "status": "Recebida",
+                "date": reg_date,
+                "note": "Manifestação criada no portal."
+            }
+        ],
+        "response": m.get("resposta_gestor") or "",
+        "createdAt": reg_date,
+        "updatedAt": up_date
     }
-    for label, pagina in paginas.items():
-        ativo = st.session_state.get("pagina_cidadao") == pagina
-        if st.sidebar.button(label, key=f"sb_{pagina}", use_container_width=True,
-                             type="primary" if ativo else "secondary"):
-            st.session_state["pagina_cidadao"] = pagina
-            st.rerun()
 
-    st.sidebar.markdown("---")
-    if st.sidebar.button("🔐 Área Administrativa", use_container_width=True):
-        st.session_state["area"] = "admin"
-        st.rerun()
+# ── API Endpoints ────────────────────────────────────────────────────────────
 
-    st.sidebar.markdown("---")
-    st.sidebar.caption("📌 Versão 2.0 | 2026")
+@app.get("/api/stats")
+def get_stats():
+    return manifestacao_repo.estatisticas_gerais()
 
+@app.get("/api/manifestacoes")
+def list_manifestacoes():
+    raw_list = manifestacao_repo.listar_todas()
+    return [map_to_frontend(dict(m)) for m in raw_list]
 
-def sidebar_admin(user: dict):
-    """Sidebar da área administrativa."""
-    from config.settings import PERFIL_LABELS, PERFIL_ADMIN
+@app.get("/api/manifestacoes/{protocolo}")
+def get_manifestacao(protocolo: str):
+    # Consulta pública via service (com mascaramento padrão de segurança)
+    m = manifestacao_service.consultar_manifestacao(protocolo)
+    if not m:
+        raise HTTPException(status_code=404, detail="Manifestação não encontrada")
+    
+    # Adapta para o formato do JS
+    return {
+        "protocol": m["protocolo"],
+        "category": m.get("categoria"),
+        "subject": m.get("assunto") or "Sem assunto",
+        "description": "Sigiloso" if m.get("eh_anonimo") else "A descrição desta manifestação está disponível apenas para o cidadão e a gestão responsável.",
+        "status": m.get("status") or "Recebida",
+        "sector": m.get("setor") or "Atendimento ao cidadão",
+        "anonymous": m.get("eh_anonimo"),
+        "name": m.get("nome_cidadao") or "Sigiloso",
+        "email": "",
+        "phone": "",
+        "history": [
+            {
+                "status": h.get("status_novo"),
+                "date": h.get("data_alteracao") if isinstance(h.get("data_alteracao"), str) else str(h.get("data_alteracao")),
+                "note": h.get("observacao") or ""
+            } for h in m.get("historico", [])
+        ],
+        "response": m.get("resposta_gestor") or "",
+        "createdAt": str(m.get("data_registro")),
+        "updatedAt": str(m.get("data_atualizacao"))
+    }
 
-    st.sidebar.markdown("## 🔐 Painel Administrativo")
-    st.sidebar.markdown(f"**{user['nome_completo']}**")
-    st.sidebar.caption(f"Perfil: {PERFIL_LABELS.get(user['perfil'], user['perfil'])}")
-    st.sidebar.markdown("---")
+@app.get("/api/manifestacoes/interna/{protocolo}")
+def get_manifestacao_interna(protocolo: str):
+    # Consulta interna para painel do atendente (sem mascaramento)
+    m = manifestacao_repo.buscar_por_protocolo(protocolo)
+    if not m:
+        raise HTTPException(status_code=404, detail="Manifestação não encontrada")
+    
+    # Busca histórico do status
+    from repositories import historico_repo
+    historico = historico_repo.listar_por_manifestacao(m["id"])
+    return map_to_frontend(dict(m), [dict(h) for h in historico])
 
-    paginas = [
-        ("📊 Dashboard", "dashboard"),
-        ("📈 Relatórios", "relatorios"),
-    ]
-    if user["perfil"] == PERFIL_ADMIN:
-        paginas.append(("👥 Usuários", "usuarios"))
+@app.post("/api/manifestacoes")
+def create_manifestacao(m: ManifestacaoCreate):
+    dados = {
+        "eh_anonimo": m.anonymous,
+        "texto_manifestacao": m.description,
+        "categoria": m.category,
+        "assunto": m.subject,
+        "nome_cidadao": m.name,
+        "email_cidadao": m.email,
+        "cpf_cidadao": "",  # Simplificado para web
+        "telefone_cidadao": m.phone,
+        "setor": m.sector or "Atendimento ao cidadão",
+    }
+    sucesso, msg, protocolo = manifestacao_service.registrar_manifestacao(dados, m.attachments)
+    if not sucesso:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"message": msg, "protocol": protocolo}
 
-    for label, pagina in paginas:
-        ativo = st.session_state.get("pagina_admin") == pagina
-        if st.sidebar.button(label, key=f"adm_{pagina}", use_container_width=True,
-                             type="primary" if ativo else "secondary"):
-            st.session_state["pagina_admin"] = pagina
-            st.rerun()
+@app.patch("/api/manifestacoes/{protocolo}")
+def update_manifestacao(protocolo: str, data: ManifestacaoUpdate):
+    m = manifestacao_repo.buscar_por_protocolo(protocolo)
+    if not m:
+        raise HTTPException(status_code=404, detail="Manifestação não encontrada")
+    
+    sucesso, msg = manifestacao_service.atualizar_status_manifestacao(
+        manifestacao_id=m["id"],
+        status_novo=data.status,
+        observacao="Status atualizado pelo painel do atendente.",
+        resposta_gestor=data.response,
+        parecer_encerramento="Manifestação concluída e respondida." if data.status == "Concluída" else None,
+        setor=data.sector,
+        usuario_id=1  # Default para admin
+    )
+    if not sucesso:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"message": msg}
 
-    st.sidebar.markdown("---")
-    if st.sidebar.button("🚪 Sair", use_container_width=True):
-        encerrar_sessao()
-        st.session_state["area"] = "cidadao"
-        st.rerun()
-    if st.sidebar.button("← Portal do Cidadão", use_container_width=True):
-        st.session_state["area"] = "cidadao"
-        st.rerun()
+@app.post("/api/auth/login")
+def login(req: LoginRequest):
+    sucesso, msg, usuario = auth_service.tentar_login(req.username, req.password)
+    if not sucesso:
+        raise HTTPException(status_code=401, detail=msg)
+    return {"message": msg, "user": usuario}
 
+@app.get("/api/validacoes")
+def list_validacoes():
+    return validacao_repo.listar_todas()
 
-def main():
-    inicializar()
+@app.post("/api/validacoes")
+def create_validation(v: ValidationCreate):
+    dados = {
+        "id": v.id,
+        "groupName": v.groupName,
+        "reviewer": v.reviewer,
+        "reviewDate": v.reviewDate,
+        "decision": v.decision,
+        "consistencyNote": v.consistencyNote,
+        "completenessNote": v.completenessNote,
+        "rnfNote": v.rnfNote,
+        "createdAt": v.createdAt,
+    }
+    validacao_repo.inserir(dados)
+    return {"message": "Validação registrada com sucesso"}
 
-    # Determina área ativa
-    area = st.session_state.get("area", "cidadao")
+@app.delete("/api/validacoes/{id}")
+def delete_validation(id: str):
+    sucesso = validacao_repo.deletar(id)
+    if not sucesso:
+        raise HTTPException(status_code=404, detail="Validação não encontrada")
+    return {"message": "Validação removida com sucesso"}
 
-    # ── ÁREA ADMINISTRATIVA ───────────────────────────────────────────────────
-    if area == "admin":
-        user = usuario_logado()
+# ── Servir Frontend Estático do Vite ──────────────────────────────────────────
 
-        if not user:
-            # Tela de login
-            from ui.admin.login import render as render_login
-            render_login()
-            return
+if os.path.exists("dist"):
+    app.mount("/assets", StaticFiles(directory="dist/assets"), name="assets")
 
-        # Usuário autenticado — exibe painel
-        sidebar_admin(user)
-        pagina_admin = st.session_state.get("pagina_admin", "dashboard")
-
-        if pagina_admin == "dashboard":
-            from ui.admin.dashboard import render as render_dashboard
-            render_dashboard()
-        elif pagina_admin == "detalhe":
-            from ui.admin.detalhe import render as render_detalhe
-            render_detalhe()
-        elif pagina_admin == "relatorios":
-            from ui.admin.relatorios import render as render_relatorios
-            render_relatorios()
-        elif pagina_admin == "usuarios":
-            from ui.admin.admin_usuarios import render as render_usuarios
-            render_usuarios()
-        else:
-            from ui.admin.dashboard import render as render_dashboard
-            render_dashboard()
-
-    # ── ÁREA DO CIDADÃO ───────────────────────────────────────────────────────
-    else:
-        sidebar_cidadao()
-        pagina = st.session_state.get("pagina_cidadao", "home")
-
-        if pagina == "home":
-            from ui.cidadao.home import render as render_home
-            render_home()
-        elif pagina == "abertura":
-            from ui.cidadao.abertura import render as render_abertura
-            render_abertura()
-        elif pagina == "consulta":
-            from ui.cidadao.consulta import render as render_consulta
-            render_consulta()
-        else:
-            from ui.cidadao.home import render as render_home
-            render_home()
-
+    @app.get("/{full_path:path}")
+    def serve_frontend(full_path: str):
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not Found")
+        
+        index_path = os.path.join("dist", "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        return {"message": "Vite frontend index.html not found"}
+else:
+    @app.get("/")
+    def read_root():
+        return {"message": "Vite frontend not built yet. Run 'npm run build'."}
 
 if __name__ == "__main__":
-    main()
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8501)

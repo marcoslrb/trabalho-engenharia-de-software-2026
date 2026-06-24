@@ -4,8 +4,8 @@ Tela inicial do portal do cidadão.
 """
 
 import streamlit as st
+# pyrefly: ignore [missing-import]
 from repositories.manifestacao_repo import estatisticas_gerais
-from utils.helpers import status_emoji
 
 
 def render():

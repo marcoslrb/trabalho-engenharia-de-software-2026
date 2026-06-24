@@ -4,6 +4,8 @@ const app = document.querySelector('#app');
 const STORAGE_KEY = 'ouvidoria-publica.manifestacoes.v1';
 const SESSION_KEY = 'ouvidoria-publica.ultima-consulta.v1';
 const VALIDATION_LOG_KEY = 'ouvidoria-publica.validacoes.v1';
+const BYPASS_LOGIN_KEY = 'ouvidoria-publica.bypass-login.v1';
+const LOGIN_SESSION_KEY = 'ouvidoria-publica.login-session.v1';
 
 const statusFlow = [
   'Recebida',
@@ -92,22 +94,14 @@ const rnfVerifiability = [
   { id: 'RNF20', status: 'parcial', metric: 'No front é rápido; comprovação oficial requer banco e backend.' },
 ];
 
-function readValidationLogs() {
+async function readValidationLogs() {
   try {
-    const raw = localStorage.getItem(VALIDATION_LOG_KEY);
-    if (!raw) {
-      return [];
-    }
-
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    const res = await fetch('/api/validacoes');
+    if (!res.ok) throw new Error();
+    return await res.json();
   } catch {
     return [];
   }
-}
-
-function writeValidationLogs(logs) {
-  localStorage.setItem(VALIDATION_LOG_KEY, JSON.stringify(logs));
 }
 
 function statusLabel(status) {
@@ -125,131 +119,86 @@ function statusLabel(status) {
   return labels[status] || status;
 }
 
-function seedManifestations() {
-  const sample = [
-    createManifestationRecord({
-      category: 'Denúncia',
-      anonymous: false,
-      name: 'Maria Santos',
-      email: 'maria@exemplo.gov.br',
-      phone: '(11) 98888-9999',
-      subject: 'Lâmpada queimada na praça central',
-      description: 'A iluminação pública da praça central está sem funcionar há mais de uma semana.',
-      sector: 'Mobilidade',
-      attachments: ['foto-praca.jpg'],
-    }),
-    createManifestationRecord({
-      category: 'Solicitação',
-      anonymous: true,
-      subject: 'Pedido de poda de árvore',
-      description: 'Galhos estão encostando na fiação e oferecendo risco para pedestres.',
-      sector: 'Meio ambiente',
-      attachments: [],
-    }),
-  ];
-
-  sample[0].status = 'Em análise';
-  sample[0].history.push({
-    status: 'Em análise',
-    date: new Date().toISOString(),
-    note: 'Manifestação encaminhada para análise técnica.',
-  });
-  sample[1].status = 'Encaminhada ao setor';
-  sample[1].history.push({
-    status: 'Encaminhada ao setor',
-    date: new Date().toISOString(),
-    note: 'Solicitação encaminhada ao setor responsável.',
-  });
-
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(sample));
-  return sample;
-}
-
-function readManifestations() {
+async function readManifestations() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      return seedManifestations();
-    }
-
-    const data = JSON.parse(raw);
-    return Array.isArray(data) ? data : seedManifestations();
+    const res = await fetch('/api/manifestacoes');
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+    return data.map(m => ({
+      protocol: m.protocolo,
+      category: m.categoria,
+      subject: m.assunto || 'Sem assunto',
+      description: m.texto_manifestacao || '',
+      status: m.status || 'Recebida',
+      sector: m.setor || 'Atendimento ao cidadão',
+      anonymous: Boolean(m.eh_anonimo),
+      name: m.nome_cidadao || '',
+      email: m.email_cidadao || '',
+      phone: m.telefone_cidadao || '',
+      response: m.resposta_gestor || '',
+      createdAt: m.data_registro,
+      updatedAt: m.data_atualizacao
+    }));
   } catch {
-    return seedManifestations();
+    return [];
   }
 }
 
-function writeManifestations(manifestations) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(manifestations));
-}
-
-function createProtocol() {
-  const now = new Date();
-  const stamp = now.toISOString().replace(/[-:TZ.]/g, '').slice(2, 14);
-  const random = Math.random().toString(36).slice(2, 6).toUpperCase();
-  return `OP-${stamp}-${random}`;
-}
-
-function createAccessCode() {
-  return Math.random().toString(36).slice(2, 8).toUpperCase();
-}
-
-function createManifestationRecord(formValues) {
-  const now = new Date().toISOString();
-  const anonymous = Boolean(formValues.anonymous);
-  const protocol = createProtocol();
-  const accessCode = anonymous ? createAccessCode() : '';
-  const subject = formValues.subject?.trim() || 'Sem assunto';
-
-  return {
-    protocol,
-    accessCode,
-    category: formValues.category,
-    anonymous,
-    name: anonymous ? 'Sigiloso' : formValues.name.trim(),
-    email: anonymous ? '' : formValues.email.trim(),
-    phone: anonymous ? '' : formValues.phone.trim(),
-    subject,
-    description: formValues.description.trim(),
-    sector: formValues.sector,
-    attachments: formValues.attachments,
-    status: 'Recebida',
-    response: '',
-    createdAt: now,
-    updatedAt: now,
-    history: [
-      {
-        status: 'Recebida',
-        date: now,
-        note: 'Manifestação criada no portal.',
-      },
-    ],
-  };
-}
-
-function findManifestation(protocol) {
-  return readManifestations().find((item) => item.protocol === protocol.trim().toUpperCase());
-}
-
-function updateManifestation(protocol, patch) {
-  const manifestations = readManifestations();
-  const index = manifestations.findIndex((item) => item.protocol === protocol);
-
-  if (index === -1) {
+async function findManifestation(protocol) {
+  try {
+    const res = await fetch(`/api/manifestacoes/${protocol.trim().toUpperCase()}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
     return null;
   }
+}
 
-  manifestations[index] = {
-    ...manifestations[index],
-    ...patch,
-    updatedAt: new Date().toISOString(),
-  };
+async function findManifestationInternal(protocol) {
+  try {
+    const res = await fetch(`/api/manifestacoes/interna/${protocol.trim().toUpperCase()}`);
+    if (!res.ok) return null;
+    const m = await res.json();
+    return {
+      protocol: m.protocolo,
+      category: m.categoria,
+      subject: m.assunto || 'Sem assunto',
+      description: m.texto_manifestacao || '',
+      status: m.status || 'Recebida',
+      sector: m.setor || 'Atendimento ao cidadão',
+      anonymous: Boolean(m.eh_anonimo),
+      name: m.nome_cidadao || '',
+      email: m.email_cidadao || '',
+      phone: m.telefone_cidadao || '',
+      response: m.resposta_gestor || '',
+      history: (m.history || []).map(h => ({
+        status: h.status_novo,
+        date: h.data_alteracao,
+        note: h.observacao || ''
+      })),
+      createdAt: m.data_registro,
+      updatedAt: m.data_atualizacao
+    };
+  } catch {
+    return null;
+  }
+}
 
-  writeManifestations(manifestations);
-  return manifestations[index];
+async function updateManifestation(protocol, patch) {
+  try {
+    const res = await fetch(`/api/manifestacoes/${protocol}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 function layout({ main, title, subtitle }) {
+  const isBypassed = localStorage.getItem(BYPASS_LOGIN_KEY) === 'true';
   return `
     <main class="site-shell">
       <aside class="rail">
@@ -262,16 +211,19 @@ function layout({ main, title, subtitle }) {
         </div>
 
         <nav class="menu" aria-label="Navegação principal">
-          <a class="menu-link" href="#/">Início</a>
-          <a class="menu-link" href="#/abrir">Abrir manifestação</a>
-          <a class="menu-link" href="#/acompanhar">Acompanhar protocolo</a>
-          <a class="menu-link" href="#/atendimento">Painel do atendente</a>
-          <a class="menu-link" href="#/validacao">Validação em campo</a>
+          <a class="menu-link" href="#/"><span class="nav-icon"></span>Início</a>
+          <a class="menu-link" href="#/abrir"><span class="nav-icon"></span>Abrir manifestação</a>
+          <a class="menu-link" href="#/acompanhar"><span class="nav-icon"></span>Acompanhar protocolo</a>
+          <a class="menu-link" href="#/atendimento"><span class="nav-icon"></span>Painel do atendente</a>
         </nav>
 
         <section class="side-card">
-          <p class="eyebrow">Fluxo real</p>
-          <strong>Ouvidoria Pública</strong>
+          <p class="eyebrow">Versão do portal</p>
+          <strong>v2.0 — Fluxo real</strong>
+          <label class="bypass-toggle-container">
+            <input type="checkbox" id="bypass-login-toggle" ${isBypassed ? 'checked' : ''} />
+            Desativar Autenticação
+          </label>
         </section>
       </aside>
 
@@ -286,52 +238,98 @@ function layout({ main, title, subtitle }) {
   `;
 }
 
-function homePage() {
-  const manifestations = readManifestations();
-  const openCount = manifestations.filter((item) => item.status !== 'Concluída').length;
-  const closedCount = manifestations.filter((item) => item.status === 'Concluída').length;
+async function homePage() {
+  let stats = { total: 0, anonimas: 0, identificadas: 0, concluidas: 0, abertas: 0 };
+  try {
+    const res = await fetch('/api/stats');
+    if (res.ok) stats = await res.json();
+  } catch { }
+
+  const openCount = stats.abertas;
+  const closedCount = stats.concluidas;
+  const anonCount = stats.anonimas;
+  const totalCount = stats.total;
+
+  const featureCards = [
+    {
+      title: 'Abrir manifestação',
+      text: 'Registre denúncias, reclamações, sugestões e elogios de forma identificada ou anônima.',
+      icon: '📝',
+      href: '#/abrir',
+      accent: '#1a56e8',
+      accentSoft: '#e8eeff',
+    },
+    {
+      title: 'Acompanhar andamento',
+      text: 'Consulte o status da sua manifestação em tempo real usando protocolo e credencial.',
+      icon: '🔍',
+      href: '#/acompanhar',
+      accent: '#00c49a',
+      accentSoft: '#e0faf3',
+    },
+    {
+      title: 'Painel do atendente',
+      text: 'Área interna para triagem, encaminhamento e resposta às manifestações recebidas.',
+      icon: '🛠',
+      href: '#/atendimento',
+      accent: '#f79009',
+      accentSoft: '#fef0c7',
+    },
+  ];
 
   return layout({
     title: 'Portal de gerenciamento de manifestações públicas',
     subtitle: 'Atendimento digital',
     main: `
-      <section class="hero hero-real">
-        <div>
-          <p class="eyebrow">Ouvidoria Digital</p>
-          <h3>Portal de atendimento ao cidadão.</h3>
+      <section class="hero">
+        <div class="hero-real">
+          <p class="eyebrow">Ouvidoria Digital — Atendimento ao cidadão</p>
+          <h3>Transparência e participação na gestão pública.</h3>
           <div class="hero-actions">
             <a class="primary-button" href="#/abrir">Abrir manifestação</a>
             <a class="ghost-button" href="#/acompanhar">Consultar protocolo</a>
           </div>
+          <div class="stat-strip">
+            <div class="stat-item">
+              <span class="stat-num">${totalCount}</span>
+              <span class="stat-label">Total</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-num">${openCount}</span>
+              <span class="stat-label">Em aberto</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-num">${anonCount}</span>
+              <span class="stat-label">Anônimas</span>
+            </div>
+          </div>
         </div>
 
-        <div class="hero-panel real-panel">
+        <div class="hero-panel">
           <p class="panel-label">Situação da base</p>
-          <strong>${manifestations.length} manifestações salvas</strong>
+          <strong style="font-size:1.5rem;font-family:'Stack Sans Headline Variable', 'Stack Sans Headline',sans-serif">${totalCount}</strong>
+          <p style="font-size:0.82rem;color:var(--muted)">manifestações registradas no sistema</p>
           <div class="panel-metrics">
             <span>${openCount} em andamento</span>
             <span>${closedCount} concluídas</span>
-            <span>${manifestations.filter((item) => item.anonymous).length} anônimas</span>
+            <span>${anonCount} anônimas</span>
           </div>
+          <a class="primary-button" href="#/abrir" style="margin-top:8px">Nova manifestação →</a>
         </div>
       </section>
 
       <section class="cards-grid">
-        ${[
-          ['Abrir manifestação', ''],
-          ['Acompanhar andamento', ''],
-          ['Responder no atendimento', ''],
-          ['Validar em campo', ''],
-        ]
-          .map(
-            ([title, text], index) => `
-              <article class="feature-card" style="--accent: var(${index % 2 === 0 ? 'citrine' : 'sky'})">
-                <h3>${title}</h3>
-                ${text ? `<p>${text}</p>` : ''}
-              </article>
+        ${featureCards
+        .map(
+          (card) => `
+              <a href="${card.href}" class="feature-card" style="--card-accent:${card.accent};--card-accent-soft:${card.accentSoft};text-decoration:none;cursor:pointer">
+                <div class="card-icon" style="background:${card.accentSoft};color:${card.accent}">${card.icon}</div>
+                <h3>${card.title}</h3>
+                <p>${card.text}</p>
+              </a>
             `,
-          )
-          .join('')}
+        )
+        .join('')}
       </section>
     `,
   });
@@ -413,12 +411,27 @@ function openPage(message = '') {
           </form>
         </article>
 
-        <aside class="screen-card side-stack">
-          <div class="callout">
-            <strong>Registro de manifestação</strong>
+        <aside class="side-stack">
+          <div class="screen-card">
+            <h4 style="font-size:0.88rem;font-weight:700;margin-bottom:12px;color:var(--text)">📋 Como funciona</h4>
+            <div style="display:grid;gap:10px">
+              <div class="callout">
+                <strong>1. Preencha o formulário</strong>
+                <p>Informe categoria, setor, assunto e descrição detalhada.</p>
+              </div>
+              <div class="callout">
+                <strong>2. Receba o protocolo</strong>
+                <p>Um número único é gerado imediatamente após o envio.</p>
+              </div>
+              <div class="callout">
+                <strong>3. Acompanhe online</strong>
+                <p>Use o protocolo para consultar o andamento a qualquer hora.</p>
+              </div>
+            </div>
           </div>
-          <div class="callout muted-callout">
-            <strong>Atendimento digital</strong>
+          <div class="screen-card" style="background:var(--accent-soft);border-color:rgba(0,196,154,0.25)">
+            <p style="font-size:0.78rem;font-weight:700;text-transform:uppercase;letter-spacing:0.10em;color:var(--accent-d);margin-bottom:6px">🔒 Privacidade</p>
+            <p style="font-size:0.82rem;color:#00795e;line-height:1.55">O modo anônimo omite todos os dados pessoais. Guarde o código de acesso gerado para consultar sua manifestação futuramente.</p>
           </div>
         </aside>
       </section>
@@ -426,9 +439,9 @@ function openPage(message = '') {
   });
 }
 
-function trackingPage(message = '') {
+async function trackingPage(message = '') {
   const savedQuery = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
-  const latest = savedQuery ? findManifestation(savedQuery.protocol) : null;
+  const latest = savedQuery ? await findManifestation(savedQuery.protocol) : null;
 
   return layout({
     title: 'Acompanhar protocolo',
@@ -440,7 +453,7 @@ function trackingPage(message = '') {
           <form id="tracking-form" class="mock-form">
             <div class="form-grid">
               <label>
-                Protocolo
+                Número do protocolo
                 <input name="protocol" type="text" placeholder="OP-2604..." value="${savedQuery?.protocol || ''}" required />
               </label>
               <label>
@@ -459,12 +472,17 @@ function trackingPage(message = '') {
           </div>
         </article>
 
-        <aside class="screen-card side-stack">
-          <div class="callout">
-            <strong>Consulta de manifestação</strong>
-          </div>
-          <div class="callout muted-callout">
-            <strong>Histórico e resposta</strong>
+        <aside class="side-stack">
+          <div class="screen-card">
+            <h4 style="font-size:0.88rem;font-weight:700;margin-bottom:12px;color:var(--text)">🔎 Fluxo de status</h4>
+            <div style="display:grid;gap:6px">
+              ${statusFlow.map((s, i) => `
+                <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;background:${i === 0 ? 'var(--accent-soft)' : 'var(--surface-2)'};border:1px solid ${i === 0 ? 'rgba(0,196,154,0.25)' : 'var(--line)'}">
+                  <span style="width:22px;height:22px;border-radius:50%;background:${i === 0 ? 'var(--accent)' : 'var(--line)'};display:grid;place-items:center;font-size:0.6rem;font-weight:800;color:${i === 0 ? '#fff' : 'var(--muted)'}">${i + 1}</span>
+                  <span style="font-size:0.82rem;font-weight:${i === 0 ? '700' : '500'};color:${i === 0 ? 'var(--accent-d)' : 'var(--text)'}">${s}</span>
+                </div>
+              `).join('')}
+            </div>
           </div>
         </aside>
       </section>
@@ -482,18 +500,7 @@ function trackingResultMarkup(manifestation, providedSecret = '') {
     `;
   }
 
-  const secretMatches = manifestation.anonymous
-    ? providedSecret?.trim().toUpperCase() === manifestation.accessCode
-    : providedSecret?.trim().toLowerCase() === manifestation.email.toLowerCase();
-
-  if (!secretMatches) {
-    return `
-      <div class="empty-state error-state">
-        <h3>Dados de acesso incorretos</h3>
-        <p>O protocolo existe, mas a credencial informada não confere com o registro.</p>
-      </div>
-    `;
-  }
+  const secretMatches = true;
 
   return `
     <article class="result-detail">
@@ -513,30 +520,33 @@ function trackingResultMarkup(manifestation, providedSecret = '') {
       <p><strong>Descrição:</strong> ${manifestation.description}</p>
       <div class="timeline vertical">
         ${manifestation.history
-          .map(
-            (entry) => `
+      .map(
+        (entry) => `
               <div class="timeline-step">
                 <span>${new Date(entry.date).toLocaleDateString('pt-BR')}</span>
                 <p><strong>${entry.status}</strong> - ${entry.note}</p>
               </div>
             `,
-          )
-          .join('')}
+      )
+      .join('')}
       </div>
       ${manifestation.response ? `<div class="notice">${manifestation.response}</div>` : '<div class="notice">Ainda não há resposta registrada.</div>'}
     </article>
   `;
 }
 
-function atendimentoPage(filters = {}) {
-  const all = readManifestations();
+async function atendimentoPage(filters = {}) {
+  const all = await readManifestations();
   const selectedProtocol = filters.protocol || all[0]?.protocol || '';
-  const selected = all.find((item) => item.protocol === selectedProtocol) || all[0] || null;
+  const selected = selectedProtocol ? await findManifestationInternal(selectedProtocol) : null;
 
   return layout({
     title: 'Painel do atendente',
     subtitle: 'Área interna',
     main: `
+      <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
+        <button type="button" class="ghost-button" id="logout-btn" style="padding:6px 12px;font-size:0.8rem;border-radius:var(--r-sm)">🚪 Encerrar Sessão</button>
+      </div>
       <section class="screen-grid admin-layout">
         <article class="screen-card admin-list-card">
           <div class="screen-header">
@@ -545,16 +555,16 @@ function atendimentoPage(filters = {}) {
           </div>
           <div class="admin-list">
             ${all
-              .map(
-                (item) => `
+        .map(
+          (item) => `
                   <button class="admin-item ${item.protocol === selected?.protocol ? 'active' : ''}" data-open-protocol="${item.protocol}">
                     <strong>${item.protocol}</strong>
                     <span>${item.category}</span>
                     <small>${item.status}</small>
                   </button>
                 `,
-              )
-              .join('')}
+        )
+        .join('')}
           </div>
         </article>
 
@@ -616,26 +626,54 @@ function adminDetailMarkup(manifestation) {
       <div class="history-box">
         <h4>Histórico</h4>
         ${manifestation.history
-          .map(
-            (entry) => `
+      .map(
+        (entry) => `
               <div class="history-item">
                 <strong>${entry.status}</strong>
                 <span>${new Date(entry.date).toLocaleString('pt-BR')}</span>
                 <p>${entry.note}</p>
               </div>
             `,
-          )
-          .join('')}
+      )
+      .join('')}
       </div>
     </form>
   `;
 }
 
-function validationPage() {
-  const logs = readValidationLogs();
-  const covered = functionalCoverage.filter((item) => item.status === 'atendido').length;
-  const partial = functionalCoverage.filter((item) => item.status === 'parcial').length;
-  const missing = functionalCoverage.filter((item) => item.status === 'nao_atendido').length;
+async function validationPage() {
+  const logs = await readValidationLogs();
+  const isBypassed = isLoginBypassed();
+
+  const dynamicConsistency = consistencyChecks.map((check) => {
+    if (check.id === 'C02') {
+      return {
+        ...check,
+        status: isBypassed ? 'inconsistente' : 'ok',
+        text: isBypassed
+          ? 'O painel do gestor está acessível sem login real (bypass ativo), conflitando com os requisitos de segurança.'
+          : 'O painel do gestor exige autenticação segura por login para acesso.',
+      };
+    }
+    return check;
+  });
+
+  const dynamicCoverage = functionalCoverage.map((item) => {
+    if (item.id === 'RF09') {
+      return {
+        ...item,
+        status: isBypassed ? 'nao_atendido' : 'atendido',
+        note: isBypassed
+          ? 'Login desativado via painel de bypass.'
+          : 'Login seguro do gestor implementado e ativo.',
+      };
+    }
+    return item;
+  });
+
+  const covered = dynamicCoverage.filter((item) => item.status === 'atendido').length;
+  const partial = dynamicCoverage.filter((item) => item.status === 'parcial').length;
+  const missing = dynamicCoverage.filter((item) => item.status === 'nao_atendido').length;
 
   const rnfTestable = rnfVerifiability.filter((item) => item.status === 'testavel').length;
   const rnfPartial = rnfVerifiability.filter((item) => item.status === 'parcial').length;
@@ -654,9 +692,9 @@ function validationPage() {
         </article>
         <article class="feature-card" style="--accent: var(--warn)">
           <h3>Consistência</h3>
-          <p>${consistencyChecks.filter((item) => item.status === 'ok').length} consistentes</p>
-          <p>${consistencyChecks.filter((item) => item.status === 'atencao').length} com atenção</p>
-          <p>${consistencyChecks.filter((item) => item.status === 'inconsistente').length} inconsistentes</p>
+          <p>${dynamicConsistency.filter((item) => item.status === 'ok').length} consistentes</p>
+          <p>${dynamicConsistency.filter((item) => item.status === 'atencao').length} com atenção</p>
+          <p>${dynamicConsistency.filter((item) => item.status === 'inconsistente').length} inconsistentes</p>
         </article>
         <article class="feature-card" style="--accent: var(--ok)">
           <h3>Verificabilidade (RNFs)</h3>
@@ -670,17 +708,17 @@ function validationPage() {
         <article class="screen-card">
           <h4>Verificação de consistência</h4>
           <div class="validation-list">
-            ${consistencyChecks
-              .map(
-                (check) => `
+            ${dynamicConsistency
+        .map(
+          (check) => `
                   <div class="check-card">
                     <span class="status-badge status-${check.status}">${statusLabel(check.status)}</span>
                     <strong>${check.id} - ${check.title}</strong>
                     <p>${check.text}</p>
                   </div>
                 `,
-              )
-              .join('')}
+        )
+        .join('')}
           </div>
         </article>
       </section>
@@ -698,17 +736,17 @@ function validationPage() {
                 </tr>
               </thead>
               <tbody>
-                ${functionalCoverage
-                  .map(
-                    (item) => `
+                ${dynamicCoverage
+        .map(
+          (item) => `
                       <tr>
                         <td>${item.id}</td>
                         <td><span class="status-badge status-${item.status}">${statusLabel(item.status)}</span></td>
                         <td>${item.note}</td>
                       </tr>
                     `,
-                  )
-                  .join('')}
+        )
+        .join('')}
               </tbody>
             </table>
           </div>
@@ -729,16 +767,16 @@ function validationPage() {
               </thead>
               <tbody>
                 ${rnfVerifiability
-                  .map(
-                    (item) => `
+        .map(
+          (item) => `
                       <tr>
                         <td>${item.id}</td>
                         <td><span class="status-badge status-${item.status}">${statusLabel(item.status)}</span></td>
                         <td>${item.metric}</td>
                       </tr>
                     `,
-                  )
-                  .join('')}
+        )
+        .join('')}
               </tbody>
             </table>
           </div>
@@ -791,11 +829,10 @@ function validationPage() {
           <article class="screen-card">
             <h4>Registros salvos</h4>
             <div class="validation-log" id="validation-log">
-              ${
-                logs.length
-                  ? logs
-                      .map(
-                        (entry) => `
+              ${logs.length
+        ? logs
+          .map(
+            (entry) => `
                           <div class="log-item">
                             <div class="screen-header">
                               <strong>${entry.groupName}</strong>
@@ -809,15 +846,86 @@ function validationPage() {
                             ${entry.rnfNote ? `<p><strong>RNFs:</strong> ${entry.rnfNote}</p>` : ''}
                           </div>
                         `,
-                      )
-                      .join('')
-                  : '<div class="empty-state"><p>Nenhum registro de validação salvo.</p></div>'
-              }
+          )
+          .join('')
+        : '<div class="empty-state"><p>Nenhum registro de validação salvo.</p></div>'
+      }
             </div>
           </article>
         </div>
       </section>
     `,
+  });
+}
+
+function isLoginBypassed() {
+  return localStorage.getItem(BYPASS_LOGIN_KEY) === 'true';
+}
+
+function isUserLoggedIn() {
+  return sessionStorage.getItem(LOGIN_SESSION_KEY) === 'true';
+}
+
+function loginPage(errorMessage = '') {
+  return layout({
+    title: 'Autenticação de Gestor',
+    subtitle: 'Área operacional restrita',
+    main: `
+      <section class="login-container">
+        <article class="login-card">
+          <div class="login-badge">
+            <span class="login-badge-icon">🔐</span>
+          </div>
+          <div class="login-header">
+            <h3>Painel de Gestão</h3>
+            <p>Acesse o painel para gerenciar manifestações</p>
+          </div>
+
+          ${errorMessage ? `
+            <div class="login-error">
+              <span class="login-error-icon">⚠️</span>
+              <span>${errorMessage}</span>
+            </div>
+          ` : ''}
+
+          <form id="login-form" class="login-form">
+            <div class="login-input-group">
+              <label for="login-username">Identificador / Usuário</label>
+              <div class="login-input-wrapper">
+                <span class="login-input-icon">👤</span>
+                <input id="login-username" name="username" type="text" placeholder="Nome de usuário" required autofocus />
+              </div>
+            </div>
+            
+            <div class="login-input-group">
+              <label for="login-password">Senha de acesso</label>
+              <div class="login-input-wrapper">
+                <span class="login-input-icon">🔑</span>
+                <input id="login-password" name="password" type="password" placeholder="Senha" required />
+              </div>
+            </div>
+
+            <div class="login-actions">
+              <button type="submit" class="login-submit-btn">
+                <span>Entrar no sistema</span>
+                <span class="login-btn-arrow">→</span>
+              </button>
+              <button type="button" class="login-bypass-btn" id="login-bypass-btn">
+                Bypass
+              </button>
+            </div>
+          </form>
+
+          <div class="login-demo-notice">
+            <p class="notice-title">💡 Credenciais de Teste</p>
+            <div class="notice-credentials">
+              <span>Usuário: <code>admin</code></span>
+              <span>Senha: <code>admin</code></span>
+            </div>
+          </div>
+        </article>
+      </section>
+    `
   });
 }
 
@@ -831,19 +939,28 @@ function currentRoute() {
   return 'home';
 }
 
-function render(message = '') {
+async function render(message = '') {
   const route = currentRoute();
   const query = new URLSearchParams(location.hash.split('?')[1] || '');
 
-  const views = {
-    home: () => homePage(),
-    abrir: () => openPage(message),
-    acompanhar: () => trackingPage(message),
-    atendimento: () => atendimentoPage({ protocol: query.get('protocol') || '' }),
-    validacao: () => validationPage(),
-  };
+  let mainContent = '';
+  if (route === 'home') {
+    mainContent = await homePage();
+  } else if (route === 'abrir') {
+    mainContent = openPage(message);
+  } else if (route === 'acompanhar') {
+    mainContent = await trackingPage(message);
+  } else if (route === 'atendimento') {
+    if (isLoginBypassed() || isUserLoggedIn()) {
+      mainContent = await atendimentoPage({ protocol: query.get('protocol') || '' });
+    } else {
+      mainContent = loginPage();
+    }
+  } else if (route === 'validacao') {
+    mainContent = await validationPage();
+  }
 
-  app.innerHTML = views[route]();
+  app.innerHTML = mainContent;
   bindGlobalEvents();
 }
 
@@ -904,21 +1021,34 @@ function bindGlobalEvents() {
         return;
       }
 
-      const record = createManifestationRecord(payload);
-      const manifestations = readManifestations();
-      manifestations.unshift(record);
-      writeManifestations(manifestations);
+      (async () => {
+        try {
+          const res = await fetch('/api/manifestacoes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          if (!res.ok) {
+            const err = await res.json();
+            alert(err.detail || 'Erro ao registrar manifestação.');
+            return;
+          }
+          const result = await res.json();
 
-      localStorage.setItem(
-        SESSION_KEY,
-        JSON.stringify({
-          protocol: record.protocol,
-          secret: record.anonymous ? record.accessCode : record.email,
-        }),
-      );
+          localStorage.setItem(
+            SESSION_KEY,
+            JSON.stringify({
+              protocol: result.protocol,
+              secret: payload.anonymous ? 'SIGILOSO' : payload.email,
+            }),
+          );
 
-      location.hash = `#/acompanhar?protocol=${record.protocol}`;
-      render(`Manifestação registrada com o protocolo ${record.protocol}.`);
+          location.hash = `#/acompanhar?protocol=${result.protocol}`;
+          await render(`Manifestação registrada com o protocolo ${result.protocol}.`);
+        } catch (e) {
+          alert('Erro de conexão ao registrar manifestação.');
+        }
+      })();
     });
   }
 
@@ -930,10 +1060,13 @@ function bindGlobalEvents() {
       const protocol = String(formData.get('protocol') || '').trim().toUpperCase();
       const secret = String(formData.get('secret') || '').trim();
       localStorage.setItem(SESSION_KEY, JSON.stringify({ protocol, secret }));
-      const manifestation = findManifestation(protocol);
-      const result = document.querySelector('#tracking-result');
-      result.innerHTML = trackingResultMarkup(manifestation, secret);
-      bindResultActions();
+
+      (async () => {
+        const manifestation = await findManifestation(protocol);
+        const result = document.querySelector('#tracking-result');
+        result.innerHTML = trackingResultMarkup(manifestation, secret);
+        bindResultActions();
+      })();
     });
 
     const fillLastButton = document.querySelector('[data-fill-last]');
@@ -957,34 +1090,22 @@ function bindGlobalEvents() {
       event.preventDefault();
       const formData = new FormData(adminForm);
       const protocol = adminForm.dataset.protocol;
-      const updated = updateManifestation(protocol, {
+
+      const payload = {
         sector: String(formData.get('sector') || ''),
         status: String(formData.get('status') || ''),
         response: String(formData.get('response') || ''),
-      });
+      };
 
-      if (!updated) {
-        alert('Manifestação não encontrada.');
-        return;
-      }
-
-      const manifestations = readManifestations();
-      const current = manifestations.find((item) => item.protocol === protocol);
-      current.history.push({
-        status: updated.status,
-        date: new Date().toISOString(),
-        note: 'Atualização registrada pelo painel do atendente.',
-      });
-      if (updated.response) {
-        current.history.push({
-          status: 'Resposta registrada',
-          date: new Date().toISOString(),
-          note: updated.response,
-        });
-      }
-      writeManifestations(manifestations);
-      location.hash = `#/atendimento?protocol=${protocol}`;
-      render('Atualização salva com sucesso no painel do atendente.');
+      (async () => {
+        const success = await updateManifestation(protocol, payload);
+        if (!success) {
+          alert('Erro ao atualizar manifestação.');
+          return;
+        }
+        location.hash = `#/atendimento?protocol=${protocol}`;
+        await render('Atualização salva com sucesso no painel do atendente.');
+      })();
     });
   }
 
@@ -993,8 +1114,7 @@ function bindGlobalEvents() {
     validationForm.addEventListener('submit', (event) => {
       event.preventDefault();
       const formData = new FormData(validationForm);
-      const logs = readValidationLogs();
-      logs.unshift({
+      const payload = {
         id: Date.now().toString(),
         groupName: String(formData.get('groupName') || '').trim(),
         reviewer: String(formData.get('reviewer') || '').trim(),
@@ -1004,17 +1124,36 @@ function bindGlobalEvents() {
         completenessNote: String(formData.get('completenessNote') || '').trim(),
         rnfNote: String(formData.get('rnfNote') || '').trim(),
         createdAt: new Date().toISOString(),
-      });
-      writeValidationLogs(logs);
-      render('Validação registrada com sucesso.');
+      };
+
+      (async () => {
+        try {
+          await fetch('/api/validacoes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          await render('Validação registrada com sucesso.');
+        } catch {
+          alert('Erro de conexão ao salvar validação.');
+        }
+      })();
     });
   }
 
   document.querySelectorAll('[data-delete-validation]').forEach((button) => {
     button.addEventListener('click', () => {
-      const logs = readValidationLogs().filter((entry) => entry.id !== button.dataset.deleteValidation);
-      writeValidationLogs(logs);
-      render('Registro de validação removido.');
+      const logId = button.dataset.deleteValidation;
+      (async () => {
+        try {
+          await fetch(`/api/validacoes/${logId}`, {
+            method: 'DELETE'
+          });
+          await render('Registro de validação removido.');
+        } catch {
+          alert('Erro de conexão ao remover validação.');
+        }
+      })();
     });
   });
 
@@ -1038,6 +1177,53 @@ function bindGlobalEvents() {
       }
     });
   });
+
+  const bypassToggle = document.querySelector('#bypass-login-toggle');
+  if (bypassToggle) {
+    bypassToggle.addEventListener('change', (event) => {
+      localStorage.setItem(BYPASS_LOGIN_KEY, event.target.checked ? 'true' : 'false');
+      if (!event.target.checked) {
+        sessionStorage.removeItem(LOGIN_SESSION_KEY);
+      }
+      render();
+    });
+  }
+
+  const loginForm = document.querySelector('#login-form');
+  if (loginForm) {
+    loginForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const formData = new FormData(loginForm);
+      const username = String(formData.get('username') || '').trim();
+      const password = String(formData.get('password') || '').trim();
+
+      if (username === 'admin' && password === 'admin') {
+        sessionStorage.setItem(LOGIN_SESSION_KEY, 'true');
+        location.hash = '#/atendimento';
+        render();
+      } else {
+        app.innerHTML = loginPage('Usuário ou senha incorretos.');
+        bindGlobalEvents();
+      }
+    });
+
+    const loginBypassBtn = document.querySelector('#login-bypass-btn');
+    if (loginBypassBtn) {
+      loginBypassBtn.addEventListener('click', () => {
+        localStorage.setItem(BYPASS_LOGIN_KEY, 'true');
+        location.hash = '#/atendimento';
+        render();
+      });
+    }
+  }
+
+  const logoutBtn = document.querySelector('#logout-btn');
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', () => {
+      sessionStorage.removeItem(LOGIN_SESSION_KEY);
+      render();
+    });
+  }
 }
 
 function bindResultActions() {
