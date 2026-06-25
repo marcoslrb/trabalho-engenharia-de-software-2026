@@ -123,27 +123,11 @@ async function readManifestations() {
   try {
     const res = await fetch('/api/manifestacoes');
     if (!res.ok) throw new Error();
-    const data = await res.json();
-    return data.map(m => ({
-      protocol: m.protocolo,
-      category: m.categoria,
-      subject: m.assunto || 'Sem assunto',
-      description: m.texto_manifestacao || '',
-      status: m.status || 'Recebida',
-      sector: m.setor || 'Atendimento ao cidadão',
-      anonymous: Boolean(m.eh_anonimo),
-      name: m.nome_cidadao || '',
-      email: m.email_cidadao || '',
-      phone: m.telefone_cidadao || '',
-      response: m.resposta_gestor || '',
-      createdAt: m.data_registro,
-      updatedAt: m.data_atualizacao
-    }));
+    return await res.json();
   } catch {
     return [];
   }
 }
-
 async function findManifestation(protocol) {
   try {
     const res = await fetch(`/api/manifestacoes/${protocol.trim().toUpperCase()}`);
@@ -158,27 +142,7 @@ async function findManifestationInternal(protocol) {
   try {
     const res = await fetch(`/api/manifestacoes/interna/${protocol.trim().toUpperCase()}`);
     if (!res.ok) return null;
-    const m = await res.json();
-    return {
-      protocol: m.protocolo,
-      category: m.categoria,
-      subject: m.assunto || 'Sem assunto',
-      description: m.texto_manifestacao || '',
-      status: m.status || 'Recebida',
-      sector: m.setor || 'Atendimento ao cidadão',
-      anonymous: Boolean(m.eh_anonimo),
-      name: m.nome_cidadao || '',
-      email: m.email_cidadao || '',
-      phone: m.telefone_cidadao || '',
-      response: m.resposta_gestor || '',
-      history: (m.history || []).map(h => ({
-        status: h.status_novo,
-        date: h.data_alteracao,
-        note: h.observacao || ''
-      })),
-      createdAt: m.data_registro,
-      updatedAt: m.data_atualizacao
-    };
+    return await res.json();
   } catch {
     return null;
   }
