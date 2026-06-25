@@ -90,10 +90,6 @@ def _validar_dados_manifestacao(dados: Dict) -> List[str]:
 
     # Dados pessoais apenas se identificado
     if not eh_anonimo:
-        ok, msg = validar_cpf(dados.get("cpf_cidadao", ""))
-        if not ok:
-            erros.append(msg)
-
         ok, msg = validar_nome(dados.get("nome_cidadao", ""), obrigatorio=True)
         if not ok:
             erros.append(msg)
